@@ -1,5 +1,5 @@
 import numpy as np
-import rk4
+from potentialflow.rk4 import RK4
 import matplotlib.pyplot as plt
 import scipy.optimize as opt
 
@@ -20,7 +20,8 @@ def plot(solution, n_lines=10):
 
     # find forward and rear stagnation points
     xy0_f = solution.geometry(0.5)
-    xy_f, xy_r = find_stagnationpoint2(solution, xy0_f)
+    # xy_f, xy_r = find_stagnationpoint2(solution, xy0_f)
+    xy_f, xy_r = solution.stagnationpoints()
     x_f, y_f = xy_f
     x_r, y_r = xy_r
     # print(x_f, y_f)
@@ -39,8 +40,8 @@ def plot(solution, n_lines=10):
     # plot streamlines
     dx = (np.max(x)-np.min(x))
     dy = (np.max(y)-np.min(y))
-    ssf_x, ssf_y = streamline(solution.velocity, x_f-1e-4, y_f, -x_scale*dx, -.01)
-    ssr_x, ssr_y = streamline(solution.velocity, x_r+1e-4, y_r, x_scale*dx, .01)
+    ssf_x, ssf_y = streamline(solution.velocity, x_f-1e-4, y_f, -x_scale*dx, -.1)
+    ssr_x, ssr_y = streamline(solution.velocity, x_r+1e-4, y_r, x_scale*dx, .1)
     plt.plot(ssf_x, ssf_y, 'k', linewidth=0.75)
     plt.plot(ssr_x, ssr_y, 'k', linewidth=0.75)
     y0_s = ssf_y[-1]
@@ -49,7 +50,7 @@ def plot(solution, n_lines=10):
     y_bot = np.linspace(y0_s-2.*y_scale*dy, y0_s, n_lines//2)
     y_initial = np.concatenate((y_bot[:-1], y_top[1:]))
     for y0 in y_initial:
-        s_x, s_y = streamline(solution.velocity, -x_scale*dx, y0, x_scale*dx, .01)
+        s_x, s_y = streamline(solution.velocity, -x_scale*dx, y0, x_scale*dx, .1)
         plt.plot(s_x, s_y, 'k', linewidth=0.75)
 
     axes = plt.gca()
@@ -61,7 +62,6 @@ def plot(solution, n_lines=10):
     axes.set_aspect('equal', adjustable='box')
     plt.legend(loc='upper right')
     plt.show()
-    plt.close()
 
 
 def find_stagnationpoint(velocity, xy0):
@@ -237,29 +237,42 @@ class JoukowskiCylinder():
 
 
 class JoukowskiAirfoil:
-    def __init__(self, cl_d, tau_d, alpha_d=0.):
-        x0, y0 = self._calc_zeta0(cl_d, tau_d, alpha_d)
+    def __init__(self, cl_d, thick_d):
+        x0, y0 = self._calc_zeta0(cl_d, thick_d)
+        x_le, x_te = self._calc_edges(x0, y0)
         self._x0 = x0
         self._y0 = y0
+        self._x_le = x_le
+        self._x_te = x_te
 
-    def _calc_zeta0(self, cl, tau, alpha):
-        x0 = -4.*tau/(3.*np.sqrt(3.))
-        a = alpha*np.pi/180.
-        y0 = (cl/(2.*np.pi*(1.-x0))-np.sin(a))/np.cos(a)
+    def _calc_zeta0(self, cl_d, thick_d):
+        x0 = -4.*thick_d/(3.*np.sqrt(3.))
+        y0 = cl_d/(2.*np.pi*(1.-x0))
 
         return x0, y0
 
-    def performance(self, alpha=0):
-        a = alpha*np.pi/180.
-        x0 = self._x0
-        y0 = self._y0
+    def _calc_edges(self, x0, y0):
         st = np.sqrt(1-y0**2)
-        cl = 2.*np.pi*(np.sin(a)+y0*np.cos(a)/st)/(1.+x0/(st-x0))
         x_te = 2.*(st+x0)
         x_le = -2.*(1-y0**2+x0**2)/(st-x0)
+
+        return x_le, x_te
+
+    def performance(self, alpha=0.):
+        a = alpha*np.pi/180.
+        self._alpha = a
+        x0 = self._x0
+        y0 = self._y0
+        x_le = self._x_le
+        x_te = self._x_te
+
+        st = np.sqrt(1-y0**2)
+        self._gamma = 4.*np.pi*(st*np.sin(a)+y0*np.cos(a))
+        cl = self._gamma/(0.5*(x_te-x_le))
+
         x_4 = x_le+(x_te-x_le)/4.
         y_4 = 0.
-        Cm4 = (np.pi/4.*(1-y0**2-x0**2)/(1-y0**2)*np.sin(2.*a) +
+        Cm4 = (np.pi/4.*((1-y0**2-x0**2)/(1-y0**2))**2*np.sin(2.*a) +
                cl/4.*((x_4-x0)*np.cos(a)+(y_4-y0)*np.sin(a))/(1-y0**2)*(st-x0))
 
         return cl, Cm4
@@ -276,10 +289,45 @@ class JoukowskiAirfoil:
         x_te = 2.*(np.sqrt(1-y0**2)+x0)
         x_le = -2.*(1-y0**2+x0**2)/(np.sqrt(1-y0**2)-x0)
         chord = x_te - x_le
-        x = (np.real(z)-x_le)/chord
-        y = np.imag(z)/chord
+        # x = (np.real(z)-x_le)/chord
+        # y = np.imag(z)/chord
+        x = np.real(z)
+        y = np.imag(z)
 
         return x, y
+
+    def velocity(self, x, y):
+        x0 = self._x0
+        y0 = self._y0
+        R = 1.
+        eps = R-np.sqrt(R**2-y0**2)-x0
+        v_inf = 1.
+        alpha = self._alpha
+        gamma = self._gamma
+        z0 = x0+y0*1j
+        z = x+y*1j
+
+        zeta = (z+np.sqrt(z*z-4.*(R-eps)**2))/2.
+        zeta2 = (z-np.sqrt(z*z-4.*(R-eps)**2))/2.
+        try:
+            if np.abs(zeta2-z0) > np.abs(zeta-z0):
+                zeta = zeta2
+        except ValueError:
+            i_bigger = np.abs(zeta2-z0) > np.abs(zeta-z0)
+            zeta[i_bigger] = zeta2[i_bigger]
+
+        w = v_inf*(np.exp(-1j*alpha)+1j*gamma/(2*np.pi*v_inf*(zeta-z0)) -
+                   R*R*np.exp(1j*alpha)/np.power(zeta-z0, 2.))/(1.-(R-eps)**2/zeta**2)
+
+        v_x = np.real(w)
+        v_y = -np.imag(w)
+
+        return v_x, v_y
+
+    def stagnationpoints(self):
+        xy_r = (self._te, 0.)
+
+        # rear
 
 
 def streamline(v_function, x_start, y_start, x_lim, ds):
@@ -292,7 +340,7 @@ def streamline(v_function, x_start, y_start, x_lim, ds):
 
         return np.array([dxds, dyds])
 
-    streamline_rk4 = rk4.RK4(dpds)
+    streamline_rk4 = RK4(dpds)
     x_values = [x_start]
     y_values = [y_start]
     s = 0.
